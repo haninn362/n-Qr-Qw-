@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import BytesIO, StringIO
+from io import BytesIO
 
 # ----------------------
 # Config
@@ -21,21 +21,12 @@ if "dataset_name" not in st.session_state:
 # ----------------------
 # Helper functions
 # ----------------------
-@st.cache_data(show_spinner=False)
-def expensive_compute(x: int) -> int:
-    """Example cached function you can replace with your logic."""
-    s = 0
-    for i in range(10_0000):
-        s += (i % (x + 1))
-    return s
-
 def load_table(uploaded_file) -> pd.DataFrame:
     """Load CSV or Excel into a DataFrame."""
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
         return pd.read_csv(uploaded_file)
     elif name.endswith(".xlsx"):
-        # requires openpyxl in requirements
         return pd.read_excel(uploaded_file, engine="openpyxl")
     else:
         raise ValueError("Unsupported file type. Please upload .csv or .xlsx")
@@ -52,32 +43,19 @@ page = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 with st.sidebar.expander("About this app"):
-    st.write("Template to help you port Python code into a Streamlit UI and upload Excel/CSV files.")
-    st.caption("Tips: use @st.cache_data for pure functions, @st.cache_resource for models/clients.")
+    st.write("Upload a CSV/Excel file and run your own analysis on it.")
 
 # ----------------------
 # Pages
 # ----------------------
 if page == "🏠 Home":
-    st.title("Streamlit App Starter")
+    st.title("Welcome")
     st.write(
         """
-        This is a minimal template. Drop your existing functions into the **Run Logic** page.
-        Use the **Upload Data** page to load a **CSV or Excel (.xlsx)** file.
+        Use the **Upload Data** page to load a CSV or Excel (.xlsx) file,
+        then go to **Run Logic** to apply your own analysis or functions.
         """
     )
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Quick Demo")
-        x = st.slider("Pick an integer", 1, 10, 3)
-        if st.button("Compute something"):
-            with st.spinner("Crunching…"):
-                out = expensive_compute(x)
-            st.success(f"Result: {out}")
-    with col2:
-        st.subheader("Session State")
-        st.json({"has_dataset": st.session_state.dataset is not None,
-                 "dataset_name": st.session_state.dataset_name})
 
 elif page == "📤 Upload Data":
     st.title("Upload Data (CSV or Excel)")
@@ -101,14 +79,12 @@ elif page == "🧠 Run Logic":
         Example: if you have a function `process(df, a, b)`, call it below and show the results.
         """
     )
-    # Example inputs
     colA, colB = st.columns(2)
     with colA:
         a = st.number_input("Parameter A", value=0.5, step=0.1)
     with colB:
         b = st.text_input("Parameter B", value="hello")
 
-    # Use dataset if present
     df = st.session_state.dataset
     st.caption("Dataset loaded: " + ("✅ yes" if df is not None else "❌ no"))
     if df is not None:
@@ -117,14 +93,12 @@ elif page == "🧠 Run Logic":
     run = st.button("Run")
     if run:
         with st.spinner("Running your logic…"):
-            # --- PLACEHOLDER: swap this block with your code ---
             result = {
                 "param_a": a,
                 "param_b": b,
                 "rows_in_dataset": int(df.shape[0]) if df is not None else 0,
                 "columns": list(df.columns) if df is not None else [],
             }
-            # ---------------------------------------------------
         st.success("Done!")
         st.json(result)
 
@@ -155,4 +129,4 @@ elif page == "⚙️ Settings":
 # Footer
 # ----------------------
 st.markdown("---")
-st.caption("Built with ❤️ and Streamlit")
+st.caption("nhebeek ❤️")
