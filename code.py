@@ -23,19 +23,17 @@ from IPython.display import display
 # ============================================================
 
 def _disp(obj, n=None, title=None):
-    """Helper display that works in Streamlit or console"""
-    try:
-        if title:
-            st.subheader(title)
-        if n is not None and hasattr(obj, "head"):
+    import streamlit as st
+    if title:
+        st.subheader(title)
+    if isinstance(obj, pd.DataFrame):
+        if n:
             st.dataframe(obj.head(n))
         else:
             st.dataframe(obj)
-    except:
-        if isinstance(obj, pd.DataFrame):
-            print(obj.head(n).to_string(index=False) if n else obj.to_string(index=False))
-        else:
-            print(obj)
+    else:
+        st.write(obj)
+
 
 def _find_first_col(df, patt):
     """Find first column in df matching a regex pattern"""
