@@ -304,4 +304,116 @@ def run_final_once(best_per_code: pd.DataFrame, excel_file, service_level=NIVEAU
             product_code=code,
             alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
             delai_usine=DELAI_USINE, delai_fournis
+        df_run = rolling_with_new_logic(
+            excel_file=excel_file,
+            product_code=code,
+            alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
+            delai_usine=DELAI_USINE, delai_fournisseur=DELAI_FOURNISSEUR,
+            service_level=service_level, nb_sim=NB_SIM, rng_seed=GRAINE_ALEA,
+            variant=method, qr_map=qr_map, qw_map=qw_map, n_map=n_map
+        )
+        results.append(df_run)
+        _disp(df_run[COLONNES_AFFICHAGE], n=10, title=f"{code} — {method.upper()} (SL={service_level:.2f})")
+    if not results:
+        return pd.DataFrame()
+    return pd.concat(results, ignore_index=True)
+
+def run_sensitivity(best_per_code: pd.DataFrame, excel_file, service_levels=[0.90, 0.92, 0.95, 0.98]):
+    qr_map, qw_map, n_map = compute_qstars(excel_file, best_per_code["code"].tolist())
+    all_results = []
+    for sl in service_levels:
+        runs = []
+        for _, row in best_per_code.iterrows():
+            code = row["code"]
+            method = str(row["method"]).lower()
+            alpha = float(row["alpha"])
+            window_ratio = float(row["window_ratio"])
+            intervalle = int(row["recalc_interval"])
+
+            df_run = rolling_with_new_logic(
+                excel_file=excel_file,
+                product_code=code,
+                alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
+                delai_usine=DELAI_USINE, delai_fournisseur=DELAI_FOURNISSEUR,
+                service_level=sl, nb_sim=NB_SIM, rng_seed=GRAINE_ALEA,
+                variant=method, qr_map=qr_map, qw_map=qw_map, n_map=n_map
+            )
+            df_run["service_level"] = sl
+            runs.append(df_run)
+
+        df_concat = pd.concat(runs, ignore_index=True) if runs else pd.DataFrame()
+        all_results.append(df_concat)
+
+        if not df_concat.empty:
+            grp = df_concat.groupby("code").agg(
+                ROP_usine_moy=("ROP_usine", "mean"),
+                SS_usine_moy=("SS_usine", "mean"),
+                ROP_fournisseur_moy=("ROP_fournisseur", "mean"),
+                SS_fournisseur_moy=("SS_fournisseur", "mean"),
+                holding_pct=("statut_stock", lambda s: (s == "holding").mean()*100),
+                rupture_pct=("statut_stock", lambda s: (s == "rupture").mean()*100),
+                Qr_star=("Qr_etoile", "first"),
+                Qw_star=("Qw_etoile", "first"),
+                n_star=("n_etoile", "first"),
+            ).reset_index()
+            _disp(grp, title=f"Résultats pour SL {sl*100:.0f}% (moyennes par article)")
+
+    return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
+
+# ======================================================
+# STREAMLIT UI
+# ======================================================
+st.title("📊 Final + Sensibilité Analysis")
+
+st.sidebar.header("Upload input files")
+uploaded_data = st.sidebar.file_uploader("Excel données produits", type=["xlsx"])
+uploaded_ses = st.sidebar.file_uploader("Best params SES", type=["xlsx"])
+uploaded_cro = st.sidebar.file_uploader("Best params CROSTON", type=["xlsx"])
+uploaded_sba = st.sidebar.file_uploader("Best params SBA", type=["xlsx"])
+
+product_filter = st.sidebar.text_input("Codes produits (séparés par ,)", "EM0400,EM1499,EM1091,EM1523,EM0392,EM1526")
+product_filter = [c.strip() for c in product_filter.split(",") if c.strip()]
+
+service_levels_input = st.sidebar.text_input("Niveaux de service (séparés par ,)", "0.90,0.92,0.95,0.98")
+service_levels = [float(x.strip()) for x in service_levels_input.split(",") if x.strip()]
+
+if uploaded_data and uploaded_ses and uploaded_cro and uploaded_sba:
+    st.success("✅ Fichiers importés correctement")
+
+    if st.button("1️⃣ Meilleure méthode par article"):
+        best_per_code = select_best_method_from_files(
+            path_ses=uploaded_ses, path_cro=uploaded_cro, path_sba=uploaded_sba,
+            product_filter=product_filter, pick_metric="RMSE"
+        )
+        _disp(best_per_code, title="✅ Meilleure méthode et paramètres par article")
+        st.session_state["best_per_code"] = best_per_code
+
+    if "best_per_code" in st.session_state:
+        best_per_code = st.session_state["best_per_code"]
+
+        if st.button("2️⃣ Run Final (SL=95%)"):
+            final_95 = run_final_once(best_per_code, uploaded_data, service_level=NIVEAU_SERVICE_DEF)
+            _disp(final_95, title="📌 Résultats finaux SL=95%")
+            st.session_state["final_95"] = final_95
+
+        if st.button("3️⃣ Analyse de sensibilité"):
+            sensi = run_sensitivity(best_per_code, uploaded_data, service_levels=service_levels)
+            if not sensi.empty:
+                summary = sensi.groupby(["code", "service_level"]).agg(
+                    ROP_u_moy=("ROP_usine", "mean"),
+                    SS_u_moy=("SS_usine", "mean"),
+                    ROP_f_moy=("ROP_fournisseur", "mean"),
+                    SS_f_moy=("SS_fournisseur", "mean"),
+                    holding_pct=("statut_stock", lambda s: (s == "holding").mean()*100),
+                    rupture_pct=("statut_stock", lambda s: (s == "rupture").mean()*100),
+                    Qr_star=("Qr_etoile", "first"),
+                    Qw_star=("Qw_etoile", "first"),
+                    n_star=("n_etoile", "first"),
+                ).reset_index()
+                _disp(summary, title="📊 Résumé global – par code et SL")
+                st.session_state["sensi"] = sensi
+            else:
+                st.warning("⚠️ Aucun résultat de sensibilité (vérifier les entrées).")
+else:
+    st.info("📥 Veuillez téléverser tous les fichiers nécessaires pour lancer l'analyse.")
 
