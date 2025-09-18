@@ -1,19 +1,179 @@
-# ============================================
-# Streamlit App – Final + Sensibilité
-# - Charge les meilleurs paramètres/méthodes (SES/Croston/SBA)
-# - Recalcule ROP/SS/stock & politique de commande avec Qr*
-# - Analyse de sensibilité sur plusieurs niveaux de service
-# ============================================
+# ============================================================
+# UNIFIED STREAMLIT APP - PART 1/2
+# ============================================================
+# This first entity contains:
+# - Imports
+# - Helpers
+# - Classification + Optimisation logic
+# ============================================================
 
-import numpy as np
-import pandas as pd
-import re
 import streamlit as st
+import pandas as pd
+import numpy as np
+import re
 from scipy.stats import nbinom
+import matplotlib.pyplot as plt
+from io import BytesIO
+import base64
+from datetime import datetime
+from IPython.display import display
 
-# --------- PARAMÈTRES GLOBAUX ---------
-DELAI_USINE = 10            # jours
-DELAI_FOURNISSEUR = 3       # jours
+# ============================================================
+# GLOBAL HELPERS
+# ============================================================
+
+def _disp(obj, n=None, title=None):
+    """Helper display that works in Streamlit or console"""
+    try:
+        if title:
+            st.subheader(title)
+        if n is not None and hasattr(obj, "head"):
+            st.dataframe(obj.head(n))
+        else:
+            st.dataframe(obj)
+    except:
+        if isinstance(obj, pd.DataFrame):
+            print(obj.head(n).to_string(index=False) if n else obj.to_string(index=False))
+        else:
+            print(obj)
+
+def _find_first_col(df, patt):
+    """Find first column in df matching a regex pattern"""
+    regex = re.compile(patt, re.IGNORECASE)
+    for c in df.columns:
+        if regex.search(str(c)):
+            return c
+    return None
+
+def _normalize_text(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    return re.sub(r"[\s\n\t]+", " ", s).strip().lower()
+
+def _somme_intervalle(serie: pd.Series, start_idx: int, intervalle: int) -> float:
+    s, e = start_idx + 1, start_idx + 1 + int(intervalle)
+    return float(pd.Series(serie).iloc[s:e].sum())
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
+DEFAULT_SERVICE_LEVEL = 0.95
+DEFAULT_INTERVAL = 10
+DEFAULT_ALPHA = 0.2
+DEFAULT_WINDOW_RATIO = 0.7
+DEFAULT_SEED = 42
+
+# ============================================================
+# CLASSIFICATION + OPTIMISATION LOGIC
+# ============================================================
+
+def classify_articles(file_excel):
+    """
+    Classify articles from Excel data
+    """
+    st.info("Classifying articles...")
+
+    df = pd.read_excel(file_excel, sheet_name="articles")
+    col_code = _find_first_col(df, "code")
+    col_nom = _find_first_col(df, "nom|designation")
+    col_cat = _find_first_col(df, "categorie|classification")
+    col_fam = _find_first_col(df, "famille|family")
+    col_val = _find_first_col(df, "valeur|value")
+
+    if not col_code or not col_nom:
+        st.error("Impossible de trouver les colonnes code/nom dans le fichier articles.")
+        return pd.DataFrame()
+
+    df = df.rename(columns={
+        col_code: "code",
+        col_nom: "nom",
+        col_cat: "categorie",
+        col_fam: "famille",
+        col_val: "valeur"
+    })
+
+    # Classification ABC sur la base de la valeur
+    df = df.sort_values("valeur", ascending=False)
+    df["cum_val"] = df["valeur"].cumsum() / df["valeur"].sum()
+    df["classification"] = pd.cut(df["cum_val"],
+                                  bins=[0, 0.7, 0.9, 1.0],
+                                  labels=["A", "B", "C"],
+                                  include_lowest=True)
+    _disp(df, title="📊 Classification ABC des articles")
+    return df
+
+def optimise_policy(file_excel, service_level=DEFAULT_SERVICE_LEVEL):
+    """
+    Optimisation politique d’approvisionnement
+    """
+    st.info("Optimisation des politiques...")
+
+    df = pd.read_excel(file_excel, sheet_name="stock")
+    col_code = _find_first_col(df, "code")
+    col_dem = _find_first_col(df, "demande")
+    col_delai = _find_first_col(df, "delai")
+    col_stock = _find_first_col(df, "stock")
+
+    df = df.rename(columns={
+        col_code: "code",
+        col_dem: "demande",
+        col_delai: "delai",
+        col_stock: "stock"
+    })
+
+    # Calcul du ROP et SS simplifiés
+    df["ROP"] = df["demande"] * df["delai"]
+    df["SS"] = df["ROP"] * service_level
+    df["Politique"] = np.where(df["stock"] < df["ROP"], "Commander", "Ne rien faire")
+
+    _disp(df, title="⚙️ Optimisation politique d’approvisionnement")
+    return df
+
+# ============================================================
+# STREAMLIT APP - PART 1
+# ============================================================
+
+def run_classification_optimisation():
+    st.title("📊 Module 1 : Classification + Optimisation")
+
+    file_excel = st.file_uploader("Charger le fichier Excel (articles + stock)", type=["xlsx"])
+    if not file_excel:
+        st.warning("Veuillez charger un fichier Excel pour continuer.")
+        return
+
+    service_level = st.slider("Niveau de service cible", 0.80, 0.99, DEFAULT_SERVICE_LEVEL, 0.01)
+
+    # Classification
+    if st.button("Lancer la Classification"):
+        df_class = classify_articles(file_excel)
+        if not df_class.empty:
+            st.success("Classification terminée.")
+
+    # Optimisation
+    if st.button("Lancer l’Optimisation"):
+        df_opt = optimise_policy(file_excel, service_level=service_level)
+        if not df_opt.empty:
+            st.success("Optimisation terminée.")
+# ============================================================
+# UNIFIED STREAMLIT APP - PART 2/2
+# ============================================================
+# This second entity contains:
+# - All functions for Final + Sensibilité
+# - Streamlit UI for simulation
+# - Sidebar to navigate between modules
+# ============================================================
+
+# --------- CONSTANTS ---------
+EXCEL_PATH_DATA = "PFE  HANIN (1).xlsx"
+PATH_SES = "best_params_SES.xlsx"
+PATH_CROSTON = "best_params_CROSTON.xlsx"
+PATH_SBA = "best_params_SBA.xlsx"
+
+CODES_PRODUITS = ["EM0400", "EM1499", "EM1091", "EM1523", "EM0392", "EM1526"]
+
+DELAI_USINE = 10
+DELAI_FOURNISSEUR = 3
 NIVEAU_SERVICE_DEF = 0.95
 NB_SIM = 1000
 GRAINE_ALEA = 42
@@ -27,21 +187,10 @@ COLONNES_AFFICHAGE = [
     "statut_stock", "service_level"
 ]
 
-# --------- OUTILS AFFICHAGE ---------
-def _disp(obj, n=None, title=None):
-    if title:
-        st.subheader(title)
-    if isinstance(obj, pd.DataFrame):
-        if n:
-            st.dataframe(obj.head(n))
-        else:
-            st.dataframe(obj)
-    else:
-        st.write(obj)
+# ============================================================
+# PARTIE A : Q* (Qr*, Qw*, n*)
+# ============================================================
 
-# ======================================================
-# PARTIE A : Q* (Qr*, Qw*, n*) depuis PFE HANIN
-# ======================================================
 def _trouver_feuille_produit(chemin_excel: str, code: str) -> str:
     xls = pd.ExcelFile(chemin_excel)
     feuilles = xls.sheet_names
@@ -57,14 +206,14 @@ def _trouver_feuille_produit(chemin_excel: str, code: str) -> str:
         return alt
     raise ValueError(f"[Feuille] Onglet pour '{code}' introuvable dans {chemin_excel}.")
 
-def compute_qstars(excel_file, codes: list):
-    df_conso = pd.read_excel(excel_file, sheet_name="consommation depots externe")
+def compute_qstars(chemin_excel: str, codes: list):
+    df_conso = pd.read_excel(chemin_excel, sheet_name="consommation depots externe")
     df_conso = df_conso.groupby('Code Produit')['Quantite STIAL'].sum()
 
     qr_map, qw_map, n_map = {}, {}, {}
     for code in codes:
-        feuille = _trouver_feuille_produit(excel_file, code)
-        df = pd.read_excel(excel_file, sheet_name=feuille)
+        feuille = _trouver_feuille_produit(chemin_excel, code)
+        df = pd.read_excel(chemin_excel, sheet_name=feuille)
 
         C_r = df['Cr : cout stockage/article '].iloc[0]
         C_w = df['Cw : cout stockage\nchez F'].iloc[0]
@@ -80,7 +229,6 @@ def compute_qstars(excel_file, codes: list):
 
         D = df_conso.get(code, 0)
         tau = 1
-
         Qr_star = ((2 * (A_r + A_w / n_star) * D) / (n_star * C_w + C_r * tau)) ** 0.5
         Qw_star = n_star * Qr_star
 
@@ -89,11 +237,12 @@ def compute_qstars(excel_file, codes: list):
         n_map[code]  = int(n_star)
     return qr_map, qw_map, n_map
 
-# ======================================================
-# PARTIE B : Séries conso/stock journalières
-# ======================================================
-def _series_conso_stock_jour(excel_file, feuille: str):
-    df = pd.read_excel(excel_file, sheet_name=feuille)
+# ============================================================
+# PARTIE B : Séries conso/stock
+# ============================================================
+
+def _series_conso_stock_jour(chemin_excel: str, feuille: str):
+    df = pd.read_excel(chemin_excel, sheet_name=feuille)
     col_date, col_stock, col_conso = df.columns[0], df.columns[1], df.columns[2]
 
     dates = pd.to_datetime(df[col_date], errors="coerce")
@@ -111,13 +260,10 @@ def _series_conso_stock_jour(excel_file, feuille: str):
     stock_jour = ts_stock.reindex(idx_complet).ffill().fillna(0.0)
     return conso_jour, stock_jour
 
-def _somme_intervalle(serie: pd.Series, start_idx: int, intervalle: int) -> float:
-    s, e = start_idx + 1, start_idx + 1 + int(intervalle)
-    return float(pd.Series(serie).iloc[s:e].sum())
-
-# ======================================================
+# ============================================================
 # PARTIE C : Méthodes de prévision
-# ======================================================
+# ============================================================
+
 def _croston_or_sba(x, alpha: float, variant: str = "sba"):
     x = pd.Series(x).fillna(0.0).astype(float).values
     x = np.where(x < 0, 0.0, x)
@@ -152,16 +298,17 @@ def _ses(x, alpha: float):
         l = alpha * x[t] + (1 - alpha) * l
     return float(l)
 
-# ======================================================
-# PARTIE D : Rolling final
-# ======================================================
+# ============================================================
+# PARTIE D : Rolling simulation
+# ============================================================
+
 def rolling_with_new_logic(
-    excel_file, product_code, alpha, window_ratio, intervalle,
+    excel_path, product_code, alpha, window_ratio, intervalle,
     delai_usine, delai_fournisseur, service_level, nb_sim, rng_seed,
     variant, qr_map, qw_map, n_map
 ):
-    feuille = _trouver_feuille_produit(excel_file, product_code)
-    conso_jour, stock_jour = _series_conso_stock_jour(excel_file, feuille)
+    feuille = _trouver_feuille_produit(excel_path, product_code)
+    conso_jour, stock_jour = _series_conso_stock_jour(excel_path, feuille)
     vals = conso_jour.values
     split_index = int(len(vals) * float(window_ratio))
     if split_index < 2:
@@ -235,11 +382,13 @@ def rolling_with_new_logic(
                 "statut_stock": statut,
                 "service_level": float(service_level),
             })
+
     return pd.DataFrame(lignes)
 
-# ======================================================
-# PARTIE E : Charger les meilleurs paramètres + méthode
-# ======================================================
+# ============================================================
+# PARTIE E : Choix des meilleures méthodes
+# ============================================================
+
 def _normalize_df_best(df_best: pd.DataFrame, method_name: str, pick_metric: str = "RMSE") -> pd.DataFrame:
     metric_key = pick_metric.upper()
     if metric_key == "ABSME":
@@ -270,7 +419,10 @@ def _normalize_df_best(df_best: pd.DataFrame, method_name: str, pick_metric: str
     out["method"] = method_name
     return out
 
-def select_best_method_from_files(path_ses, path_cro, path_sba, product_filter=None, pick_metric="RMSE"):
+def select_best_method_from_files(
+    path_ses=PATH_SES, path_cro=PATH_CROSTON, path_sba=PATH_SBA,
+    product_filter=None, pick_metric="RMSE"
+):
     df_best_SES = pd.read_excel(path_ses)
     df_best_CRO = pd.read_excel(path_cro)
     df_best_SBA = pd.read_excel(path_sba)
@@ -287,11 +439,12 @@ def select_best_method_from_files(path_ses, path_cro, path_sba, product_filter=N
     best_per_code = candidates.loc[idx].sort_values(["code"]).reset_index(drop=True)
     return best_per_code
 
-# ======================================================
-# PARTIE F : Final (SL unique) + Sensibilité
-# ======================================================
-def run_final_once(best_per_code: pd.DataFrame, excel_file, service_level=NIVEAU_SERVICE_DEF):
-    qr_map, qw_map, n_map = compute_qstars(excel_file, best_per_code["code"].tolist())
+# ============================================================
+# PARTIE F : Final + Sensibilité
+# ============================================================
+
+def run_final_once(best_per_code: pd.DataFrame, service_level=NIVEAU_SERVICE_DEF):
+    qr_map, qw_map, n_map = compute_qstars(EXCEL_PATH_DATA, best_per_code["code"].tolist())
     results = []
     for _, row in best_per_code.iterrows():
         code = row["code"]
@@ -300,12 +453,7 @@ def run_final_once(best_per_code: pd.DataFrame, excel_file, service_level=NIVEAU
         window_ratio = float(row["window_ratio"])
         intervalle = int(row["recalc_interval"])
         df_run = rolling_with_new_logic(
-            excel_file=excel_file,
-            product_code=code,
-            alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
-            delai_usine=DELAI_USINE, delai_fournis
-        df_run = rolling_with_new_logic(
-            excel_file=excel_file,
+            excel_path=EXCEL_PATH_DATA,
             product_code=code,
             alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
             delai_usine=DELAI_USINE, delai_fournisseur=DELAI_FOURNISSEUR,
@@ -313,15 +461,16 @@ def run_final_once(best_per_code: pd.DataFrame, excel_file, service_level=NIVEAU
             variant=method, qr_map=qr_map, qw_map=qw_map, n_map=n_map
         )
         results.append(df_run)
-        _disp(df_run[COLONNES_AFFICHAGE], n=10, title=f"{code} — {method.upper()} (SL={service_level:.2f})")
+        _disp(df_run[COLONNES_AFFICHAGE], n=10, title=f"\n=== {code} — {method.upper()} (SL={service_level:.2f}) ===")
     if not results:
         return pd.DataFrame()
     return pd.concat(results, ignore_index=True)
 
-def run_sensitivity(best_per_code: pd.DataFrame, excel_file, service_levels=[0.90, 0.92, 0.95, 0.98]):
-    qr_map, qw_map, n_map = compute_qstars(excel_file, best_per_code["code"].tolist())
+def run_sensitivity(best_per_code: pd.DataFrame, service_levels=[0.90, 0.92, 0.95, 0.98]):
+    qr_map, qw_map, n_map = compute_qstars(EXCEL_PATH_DATA, best_per_code["code"].tolist())
     all_results = []
     for sl in service_levels:
+        st.write(f"\n\n🔎 Simulation avec Service Level = {sl*100:.0f}%")
         runs = []
         for _, row in best_per_code.iterrows():
             code = row["code"]
@@ -331,7 +480,7 @@ def run_sensitivity(best_per_code: pd.DataFrame, excel_file, service_levels=[0.9
             intervalle = int(row["recalc_interval"])
 
             df_run = rolling_with_new_logic(
-                excel_file=excel_file,
+                excel_path=EXCEL_PATH_DATA,
                 product_code=code,
                 alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
                 delai_usine=DELAI_USINE, delai_fournisseur=DELAI_FOURNISSEUR,
@@ -356,64 +505,59 @@ def run_sensitivity(best_per_code: pd.DataFrame, excel_file, service_levels=[0.9
                 Qw_star=("Qw_etoile", "first"),
                 n_star=("n_etoile", "first"),
             ).reset_index()
-            _disp(grp, title=f"Résultats pour SL {sl*100:.0f}% (moyennes par article)")
+            _disp(grp, title=f"=== Résultats pour SL {sl*100:.0f}% (moyennes par article) ===")
 
     return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
 
-# ======================================================
-# STREAMLIT UI
-# ======================================================
-st.title("📊 Final + Sensibilité Analysis")
+# ============================================================
+# STREAMLIT APP - PART 2
+# ============================================================
 
-st.sidebar.header("Upload input files")
-uploaded_data = st.sidebar.file_uploader("Excel données produits", type=["xlsx"])
-uploaded_ses = st.sidebar.file_uploader("Best params SES", type=["xlsx"])
-uploaded_cro = st.sidebar.file_uploader("Best params CROSTON", type=["xlsx"])
-uploaded_sba = st.sidebar.file_uploader("Best params SBA", type=["xlsx"])
+def run_final_sensitivity():
+    st.title("📈 Module 2 : Simulation Finale + Sensibilité")
 
-product_filter = st.sidebar.text_input("Codes produits (séparés par ,)", "EM0400,EM1499,EM1091,EM1523,EM0392,EM1526")
-product_filter = [c.strip() for c in product_filter.split(",") if c.strip()]
+    st.info("Chargement des meilleures méthodes et paramètres...")
+    best_per_code = select_best_method_from_files(
+        path_ses=PATH_SES, path_cro=PATH_CROSTON, path_sba=PATH_SBA,
+        product_filter=CODES_PRODUITS, pick_metric="RMSE"
+    )
+    _disp(best_per_code, title="✅ Meilleure méthode et meilleurs paramètres par article")
 
-service_levels_input = st.sidebar.text_input("Niveaux de service (séparés par ,)", "0.90,0.92,0.95,0.98")
-service_levels = [float(x.strip()) for x in service_levels_input.split(",") if x.strip()]
+    st.write("▶️ Recalcul final au niveau de service 95%")
+    final_95 = run_final_once(best_per_code, service_level=NIVEAU_SERVICE_DEF)
 
-if uploaded_data and uploaded_ses and uploaded_cro and uploaded_sba:
-    st.success("✅ Fichiers importés correctement")
+    SERVICE_LEVELS = [0.90, 0.92, 0.95, 0.98]
+    sensi = run_sensitivity(best_per_code, service_levels=SERVICE_LEVELS)
 
-    if st.button("1️⃣ Meilleure méthode par article"):
-        best_per_code = select_best_method_from_files(
-            path_ses=uploaded_ses, path_cro=uploaded_cro, path_sba=uploaded_sba,
-            product_filter=product_filter, pick_metric="RMSE"
-        )
-        _disp(best_per_code, title="✅ Meilleure méthode et paramètres par article")
-        st.session_state["best_per_code"] = best_per_code
+    if not sensi.empty:
+        st.subheader("📊 Résumé global – moyennes par code et niveau de service")
+        summary = sensi.groupby(["code", "service_level"]).agg(
+            ROP_u_moy=("ROP_usine", "mean"),
+            SS_u_moy=("SS_usine", "mean"),
+            ROP_f_moy=("ROP_fournisseur", "mean"),
+            SS_f_moy=("SS_fournisseur", "mean"),
+            holding_pct=("statut_stock", lambda s: (s == "holding").mean()*100),
+            rupture_pct=("statut_stock", lambda s: (s == "rupture").mean()*100),
+            Qr_star=("Qr_etoile", "first"),
+            Qw_star=("Qw_etoile", "first"),
+            n_star=("n_etoile", "first"),
+        ).reset_index()
+        _disp(summary, n=50)
+    else:
+        st.warning("⚠️ Aucun résultat de sensibilité (vérifier les entrées).")
 
-    if "best_per_code" in st.session_state:
-        best_per_code = st.session_state["best_per_code"]
+# ============================================================
+# MAIN APP NAVIGATION
+# ============================================================
 
-        if st.button("2️⃣ Run Final (SL=95%)"):
-            final_95 = run_final_once(best_per_code, uploaded_data, service_level=NIVEAU_SERVICE_DEF)
-            _disp(final_95, title="📌 Résultats finaux SL=95%")
-            st.session_state["final_95"] = final_95
+def main():
+    st.sidebar.title("Navigation")
+    choice = st.sidebar.radio("Choisir un module", ["Classification + Optimisation", "Final + Sensibilité"])
 
-        if st.button("3️⃣ Analyse de sensibilité"):
-            sensi = run_sensitivity(best_per_code, uploaded_data, service_levels=service_levels)
-            if not sensi.empty:
-                summary = sensi.groupby(["code", "service_level"]).agg(
-                    ROP_u_moy=("ROP_usine", "mean"),
-                    SS_u_moy=("SS_usine", "mean"),
-                    ROP_f_moy=("ROP_fournisseur", "mean"),
-                    SS_f_moy=("SS_fournisseur", "mean"),
-                    holding_pct=("statut_stock", lambda s: (s == "holding").mean()*100),
-                    rupture_pct=("statut_stock", lambda s: (s == "rupture").mean()*100),
-                    Qr_star=("Qr_etoile", "first"),
-                    Qw_star=("Qw_etoile", "first"),
-                    n_star=("n_etoile", "first"),
-                ).reset_index()
-                _disp(summary, title="📊 Résumé global – par code et SL")
-                st.session_state["sensi"] = sensi
-            else:
-                st.warning("⚠️ Aucun résultat de sensibilité (vérifier les entrées).")
-else:
-    st.info("📥 Veuillez téléverser tous les fichiers nécessaires pour lancer l'analyse.")
+    if choice == "Classification + Optimisation":
+        run_classification_optimisation()
+    elif choice == "Final + Sensibilité":
+        run_final_sensitivity()
 
+if __name__ == "__main__":
+    main()
