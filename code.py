@@ -39,31 +39,15 @@ def _find_first_col(df, substrings):
 # Part 1 – Classification of Articles
 # ======================================================
 def classify_articles(file_articles):
-    """
-    Classification ABC/XYZ on articles.xlsx
-    Auto-detects the sheet if 'articles' is not present.
-    """
     xls = pd.ExcelFile(file_articles)
-
-    # Try to find a sheet with 'article' in its name
-    sheet_candidates = [s for s in xls.sheet_names if "article" in s.lower()]
-    if sheet_candidates:
-        sheet_name = sheet_candidates[0]
-    else:
-        # Fallback: just take the first sheet
-        sheet_name = xls.sheet_names[0]
-
+    sheet_name = xls.sheet_names[0]  # take the first sheet
     df = pd.read_excel(file_articles, sheet_name=sheet_name)
 
-    # Find code and value columns
-    col_code = _find_first_col(df, ["code", "produit", "article"])
-    col_val = _find_first_col(df, ["valeur", "sales", "chiffre", "montant"])
+    # Product code is the first column
+    col_code = df.columns[0]
 
-    if not col_code or not col_val:
-        raise ValueError(
-            f"❌ Colonnes introuvables dans {sheet_name}. "
-            f"Colonnes disponibles : {df.columns.tolist()}"
-        )
+    # Let user pick the value column
+    col_val = st.selectbox("Choisir la colonne de valeur :", df.columns[1:])
 
     # --- ABC classification ---
     df_sorted = df.sort_values(by=col_val, ascending=False).reset_index(drop=True)
@@ -77,12 +61,7 @@ def classify_articles(file_articles):
     )
 
     # --- XYZ classification ---
-    if _find_first_col(df, ["consommation", "demand", "qty"]):
-        col_cons = _find_first_col(df, ["consommation", "demand", "qty"])
-        cv = df[col_cons].std() / (df[col_cons].mean() + 1e-9)
-    else:
-        cv = np.random.rand()
-
+    cv = df[col_val].std() / (df[col_val].mean() + 1e-9)
     if cv < 0.5:
         xyz = "X"
     elif cv < 1:
@@ -93,6 +72,7 @@ def classify_articles(file_articles):
     df_sorted["XYZ"] = xyz
 
     return df_sorted[[col_code, col_val, "ABC", "XYZ"]]
+
 
 
 def run_classification(file_articles):
