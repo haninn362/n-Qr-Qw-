@@ -40,18 +40,32 @@ def _find_first_col(df, substrings):
 # ======================================================
 def classify_articles(file_articles):
     """
-    Classification ABC/XYZ on 'articles.xlsx'
+    Classification ABC/XYZ on articles.xlsx
+    Auto-detects the sheet if 'articles' is not present.
     """
-    df = pd.read_excel(file_articles, sheet_name="articles")
+    xls = pd.ExcelFile(file_articles)
 
-    # Find columns dynamically
+    # Try to find a sheet with 'article' in its name
+    sheet_candidates = [s for s in xls.sheet_names if "article" in s.lower()]
+    if sheet_candidates:
+        sheet_name = sheet_candidates[0]
+    else:
+        # Fallback: just take the first sheet
+        sheet_name = xls.sheet_names[0]
+
+    df = pd.read_excel(file_articles, sheet_name=sheet_name)
+
+    # Find code and value columns
     col_code = _find_first_col(df, ["code", "produit", "article"])
-    col_val = _find_first_col(df, ["valeur", "sales", "chiffre"])
+    col_val = _find_first_col(df, ["valeur", "sales", "chiffre", "montant"])
 
     if not col_code or not col_val:
-        raise ValueError("❌ Impossible de trouver colonnes code/valeur dans articles.xlsx")
+        raise ValueError(
+            f"❌ Colonnes introuvables dans {sheet_name}. "
+            f"Colonnes disponibles : {df.columns.tolist()}"
+        )
 
-    # ABC classification
+    # --- ABC classification ---
     df_sorted = df.sort_values(by=col_val, ascending=False).reset_index(drop=True)
     df_sorted["cum_val"] = df_sorted[col_val].cumsum()
     df_sorted["cum_pct"] = df_sorted["cum_val"] / df_sorted[col_val].sum()
@@ -62,9 +76,10 @@ def classify_articles(file_articles):
         include_lowest=True,
     )
 
-    # XYZ classification: coefficient de variation fictif (here: random or std-based)
-    if "consommation" in df.columns:
-        cv = df["consommation"].std() / (df["consommation"].mean() + 1e-9)
+    # --- XYZ classification ---
+    if _find_first_col(df, ["consommation", "demand", "qty"]):
+        col_cons = _find_first_col(df, ["consommation", "demand", "qty"])
+        cv = df[col_cons].std() / (df[col_cons].mean() + 1e-9)
     else:
         cv = np.random.rand()
 
@@ -78,6 +93,7 @@ def classify_articles(file_articles):
     df_sorted["XYZ"] = xyz
 
     return df_sorted[[col_code, col_val, "ABC", "XYZ"]]
+
 
 def run_classification(file_articles):
     st.header("📊 Classification ABC/XYZ")
