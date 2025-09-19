@@ -197,4 +197,5 @@ with tab4:
         st.dataframe(df_sl)
     sensi_all = pd.concat(sensi_results, ignore_index=True)
     st.write("📊 Summary")
-    st.dataframe(sensi_all.groupby(["code","service_level"]).mean().reset_index())
+    summary = sensi_all.groupby(["code","service_level"]).mean(numeric_only=True).reset_index()
+    st.dataframe(summary)
