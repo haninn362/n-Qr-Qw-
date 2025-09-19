@@ -1,8 +1,5 @@
 # ============================================
-# Streamlit App – Optimisation + Sensibilité
-# - Calcule les meilleurs paramètres (SES/Croston/SBA)
-# - Recalcule ROP/SS/stock & politique de commande avec Qr*
-# - Analyse de sensibilité sur plusieurs niveaux de service
+# Streamlit App – Final + Sensibilité
 # ============================================
 
 import numpy as np
@@ -30,20 +27,24 @@ COLONNES_AFFICHAGE = [
 
 # --------- OUTILS AFFICHAGE ---------
 def _disp(obj, n=None, title=None):
-    if title:
-        st.subheader(title)
-    if isinstance(obj, pd.DataFrame):
-        if n:
-            st.dataframe(obj.head(n))
+    try:
+        if title:
+            st.subheader(title)
+        if isinstance(obj, pd.DataFrame):
+            if n:
+                st.dataframe(obj.head(n))
+            else:
+                st.dataframe(obj)
         else:
-            st.dataframe(obj)
-    else:
+            st.write(obj)
+    except Exception as e:
         st.write(obj)
 
 # ======================================================
 # PARTIE A : Q* (Qr*, Qw*, n*) depuis PFE HANIN
 # ======================================================
-def _trouver_feuille_produit(xls: pd.ExcelFile, code: str) -> str:
+def _trouver_feuille_produit(chemin_excel: str, code: str) -> str:
+    xls = pd.ExcelFile(chemin_excel)
     feuilles = xls.sheet_names
     cible = f"time serie {code}"
     if cible in feuilles:
@@ -55,29 +56,22 @@ def _trouver_feuille_produit(xls: pd.ExcelFile, code: str) -> str:
     alt = f"time series {code}"
     if alt in feuilles:
         return alt
-    raise ValueError(f"[Feuille] Onglet pour '{code}' introuvable.")
+    raise ValueError(f"[Feuille] Onglet pour '{code}' introuvable dans {chemin_excel}.")
 
-def compute_qstars(file_hanin: str, codes: list):
-    """
-    Calcule Qr*, Qw*, n* pour chaque article.
-    Retourne trois dicts : qr_map, qw_map, n_map
-    """
-    df_conso = pd.read_excel(file_hanin, sheet_name="consommation depots externe")
+def compute_qstars(chemin_excel: str, codes: list):
+    df_conso = pd.read_excel(chemin_excel, sheet_name="consommation depots externe")
     df_conso = df_conso.groupby('Code Produit')['Quantite STIAL'].sum()
 
     qr_map, qw_map, n_map = {}, {}, {}
-    xls = pd.ExcelFile(file_hanin)
-
     for code in codes:
-        feuille = _trouver_feuille_produit(xls, code)
-        df = pd.read_excel(file_hanin, sheet_name=feuille)
+        feuille = _trouver_feuille_produit(chemin_excel, code)
+        df = pd.read_excel(chemin_excel, sheet_name=feuille)
 
         C_r = df['Cr : cout stockage/article '].iloc[0]
         C_w = df['Cw : cout stockage\nchez F'].iloc[0]
         A_w = df['Aw : cout de\nlancement chez U'].iloc[0]
         A_r = df['Ar : cout de \nlancement chez F'].iloc[0]
 
-        # n* (arrondi >=1)
         n_val = (A_w * C_r) / (A_r * C_w)
         n_val = 1 if n_val < 1 else round(n_val)
         n1, n2 = int(n_val), int(n_val) + 1
@@ -85,9 +79,8 @@ def compute_qstars(file_hanin: str, codes: list):
         F_n2 = (A_r + A_w / n2) * (n2 * C_w + C_r)
         n_star = n1 if F_n1 <= F_n2 else n2
 
-        # Demande totale D (agrégée)
         D = df_conso.get(code, 0)
-        tau = 1  # période (jour)
+        tau = 1  
 
         Qr_star = ((2 * (A_r + A_w / n_star) * D) / (n_star * C_w + C_r * tau)) ** 0.5
         Qw_star = n_star * Qr_star
@@ -100,8 +93,8 @@ def compute_qstars(file_hanin: str, codes: list):
 # ======================================================
 # PARTIE B : Séries conso/stock journalières
 # ======================================================
-def _series_conso_stock_jour(file_hanin: str, feuille: str):
-    df = pd.read_excel(file_hanin, sheet_name=feuille)
+def _series_conso_stock_jour(chemin_excel: str, feuille: str):
+    df = pd.read_excel(chemin_excel, sheet_name=feuille)
     col_date, col_stock, col_conso = df.columns[0], df.columns[1], df.columns[2]
 
     dates = pd.to_datetime(df[col_date], errors="coerce")
@@ -167,8 +160,7 @@ def rolling_with_new_logic(
     delai_usine, delai_fournisseur, service_level, nb_sim, rng_seed,
     variant, qr_map, qw_map, n_map
 ):
-    xls = pd.ExcelFile(excel_path)
-    feuille = _trouver_feuille_produit(xls, product_code)
+    feuille = _trouver_feuille_produit(excel_path, product_code)
     conso_jour, stock_jour = _series_conso_stock_jour(excel_path, feuille)
     vals = conso_jour.values
     split_index = int(len(vals) * float(window_ratio))
@@ -184,7 +176,6 @@ def rolling_with_new_logic(
             train = vals[:i]
             date_test = conso_jour.index[i]
 
-            # Prévision par méthode
             if variant == "sba":
                 f = _croston_or_sba(train, alpha, "sba")
             elif variant == "croston":
@@ -199,7 +190,6 @@ def rolling_with_new_logic(
             stock_dispo = _somme_intervalle(stock_jour, i, intervalle)
             stock_apres_intervalle = stock_apres_intervalle + stock_dispo - demande_reelle
 
-            # ROP usine
             X_Lt = delai_usine * f
             sigma_Lt = sigma * np.sqrt(max(delai_usine, 1e-9))
             var_u = sigma_Lt**2 if sigma_Lt**2 > X_Lt else X_Lt + 1e-5
@@ -208,7 +198,6 @@ def rolling_with_new_logic(
             ROP_u = float(np.percentile(nbinom.rvs(r_nb, p_nb, size=nb_sim, random_state=rng), 100 * service_level))
             SS_u = max(ROP_u - X_Lt, 0.0)
 
-            # ROP fournisseur
             totalL = delai_usine + delai_fournisseur
             X_Lt_Lw = totalL * f
             sigma_Lt_Lw = sigma * np.sqrt(max(totalL, 1e-9))
@@ -218,8 +207,8 @@ def rolling_with_new_logic(
             ROP_f = float(np.percentile(nbinom.rvs(r_nb_f, p_nb_f, size=nb_sim, random_state=rng), 100 * service_level))
             SS_f = max(ROP_f - X_Lt_Lw, 0.0)
 
-            # Politique de commande
             ROP_u_interval = ROP_u * (intervalle / max(delai_usine, 1e-9))
+
             if stock_apres_intervalle >= demande_reelle * delai_usine:
                 politique = "pas_de_commande"
             else:
@@ -249,50 +238,106 @@ def rolling_with_new_logic(
 
     return pd.DataFrame(lignes)
 
-# ======================================================
-# PARTIE E : Sélection des meilleurs paramètres
-# ======================================================
-def select_best_method_from_articles(file_articles):
-    df = pd.read_excel(file_articles, sheet_name=0)  # prend la première feuille
-    # Normalisation
-    required_cols = {"code", "alpha", "window_ratio", "recalc_interval", "score", "method"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(f"Le fichier articles.xlsx doit contenir {required_cols}")
-    return df
 
 # ======================================================
-# PARTIE F : Final + Sensibilité
+# PARTIE E : Charger les meilleurs paramètres + méthode
 # ======================================================
-def run_final_once(best_per_code: pd.DataFrame, file_hanin, service_level=NIVEAU_SERVICE_DEF):
-    qr_map, qw_map, n_map = compute_qstars(file_hanin, best_per_code["code"].tolist())
+def _normalize_df_best(df_best: pd.DataFrame, method_name: str, pick_metric: str = "RMSE") -> pd.DataFrame:
+    metric_key = pick_metric.upper()
+    if metric_key == "ABSME":
+        a, w, itv, s = "best_ME_alpha", "best_ME_window", "best_ME_interval", "best_absME"
+    else:
+        a, w, itv, s = f"best_{metric_key}_alpha", f"best_{metric_key}_window", f"best_{metric_key}_interval", f"best_{metric_key}"
+
+    for cand in [
+        (a, w, itv, s),
+        ("best_RMSE_alpha", "best_RMSE_window", "best_RMSE_interval", "best_RMSE"),
+        ("best_MSE_alpha",  "best_MSE_window",  "best_MSE_interval",  "best_MSE"),
+        ("best_ME_alpha",   "best_ME_window",   "best_ME_interval",   "best_ME"),
+    ]:
+        if all(c in df_best.columns for c in cand):
+            a, w, itv, s = cand
+            break
+
+    out = df_best.rename(columns={
+        a: "alpha", w: "window_ratio", itv: "recalc_interval", s: "score"
+    })
+    keep = ["code", "alpha", "window_ratio", "recalc_interval", "score"]
+    if "n_points_used" in df_best.columns:
+        out["n_points_used"] = df_best["n_points_used"]
+        keep.append("n_points_used")
+    out = out[keep].copy()
+    for c in ["alpha", "window_ratio", "recalc_interval", "score"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out["method"] = method_name
+    return out
+
+
+def select_best_method_from_files(path_ses, path_cro, path_sba, product_filter=None, pick_metric="RMSE"):
+    df_best_SES = pd.read_excel(path_ses)
+    df_best_CRO = pd.read_excel(path_cro)
+    df_best_SBA = pd.read_excel(path_sba)
+
+    cand_ses = _normalize_df_best(df_best_SES, "ses", pick_metric)
+    cand_cro = _normalize_df_best(df_best_CRO, "croston", pick_metric)
+    cand_sba = _normalize_df_best(df_best_SBA, "sba", pick_metric)
+
+    candidates = pd.concat([cand_ses, cand_cro, cand_sba], ignore_index=True)
+    if product_filter:
+        candidates = candidates[candidates["code"].isin(product_filter)].copy()
+
+    idx = candidates.groupby("code")["score"].idxmin()
+    best_per_code = candidates.loc[idx].sort_values(["code"]).reset_index(drop=True)
+    return best_per_code
+
+
+# ======================================================
+# PARTIE F : Final (SL unique) + Sensibilité
+# ======================================================
+def run_final_once(best_per_code: pd.DataFrame, excel_file, service_level=NIVEAU_SERVICE_DEF):
+    qr_map, qw_map, n_map = compute_qstars(excel_file, best_per_code["code"].tolist())
     results = []
     for _, row in best_per_code.iterrows():
+        code = row["code"]
+        method = str(row["method"]).lower()
+        alpha = float(row["alpha"])
+        window_ratio = float(row["window_ratio"])
+        intervalle = int(row["recalc_interval"])
         df_run = rolling_with_new_logic(
-            excel_path=file_hanin,
-            product_code=row["code"],
-            alpha=row["alpha"], window_ratio=row["window_ratio"], intervalle=row["recalc_interval"],
+            excel_path=excel_file,
+            product_code=code,
+            alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
             delai_usine=DELAI_USINE, delai_fournisseur=DELAI_FOURNISSEUR,
             service_level=service_level, nb_sim=NB_SIM, rng_seed=GRAINE_ALEA,
-            variant=row["method"], qr_map=qr_map, qw_map=qw_map, n_map=n_map
+            variant=method, qr_map=qr_map, qw_map=qw_map, n_map=n_map
         )
         results.append(df_run)
-        _disp(df_run[COLONNES_AFFICHAGE], n=10, title=f"=== {row['code']} — {row['method'].upper()} (SL={service_level:.2f}) ===")
-    return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+        _disp(df_run[COLONNES_AFFICHAGE], n=10, title=f"{code} — {method.upper()} (SL={service_level:.2f})")
+    if not results:
+        return pd.DataFrame()
+    return pd.concat(results, ignore_index=True)
 
-def run_sensitivity(best_per_code: pd.DataFrame, file_hanin, service_levels=[0.90, 0.92, 0.95, 0.98]):
-    qr_map, qw_map, n_map = compute_qstars(file_hanin, best_per_code["code"].tolist())
+
+def run_sensitivity(best_per_code: pd.DataFrame, excel_file, service_levels=[0.90, 0.92, 0.95, 0.98]):
+    qr_map, qw_map, n_map = compute_qstars(excel_file, best_per_code["code"].tolist())
     all_results = []
     for sl in service_levels:
-        st.markdown(f"### 🔎 Simulation avec Service Level = {sl*100:.0f}%")
+        st.subheader(f"Simulation avec Service Level = {sl*100:.0f}%")
         runs = []
         for _, row in best_per_code.iterrows():
+            code = row["code"]
+            method = str(row["method"]).lower()
+            alpha = float(row["alpha"])
+            window_ratio = float(row["window_ratio"])
+            intervalle = int(row["recalc_interval"])
+
             df_run = rolling_with_new_logic(
-                excel_path=file_hanin,
-                product_code=row["code"],
-                alpha=row["alpha"], window_ratio=row["window_ratio"], intervalle=row["recalc_interval"],
+                excel_path=excel_file,
+                product_code=code,
+                alpha=alpha, window_ratio=window_ratio, intervalle=intervalle,
                 delai_usine=DELAI_USINE, delai_fournisseur=DELAI_FOURNISSEUR,
                 service_level=sl, nb_sim=NB_SIM, rng_seed=GRAINE_ALEA,
-                variant=row["method"], qr_map=qr_map, qw_map=qw_map, n_map=n_map
+                variant=method, qr_map=qr_map, qw_map=qw_map, n_map=n_map
             )
             df_run["service_level"] = sl
             runs.append(df_run)
@@ -312,28 +357,32 @@ def run_sensitivity(best_per_code: pd.DataFrame, file_hanin, service_levels=[0.9
                 Qw_star=("Qw_etoile", "first"),
                 n_star=("n_etoile", "first"),
             ).reset_index()
-            _disp(grp, title=f"Résultats pour SL {sl*100:.0f}% (moyennes par article)")
+            _disp(grp, title=f"Résultats pour SL {sl*100:.0f}%")
 
     return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
 
+
 # ======================================================
-# PARTIE G : Streamlit App
+# MAIN APP
 # ======================================================
 def main():
-    st.title("📊 Optimisation & Sensibilité – Supply Chain")
+    st.title("📊 Optimisation et Analyse de Sensibilité")
+    st.write("Upload your Excel files below:")
 
-    file_articles = st.file_uploader("📥 Charger le fichier `articles.xlsx`", type=["xlsx"])
-    file_hanin = st.file_uploader("📥 Charger le fichier `PFE HANIN (1).xlsx`", type=["xlsx"])
+    file_data = st.file_uploader("Upload PFE HANIN Excel file", type=["xlsx"], key="pfe")
+    file_ses = st.file_uploader("Upload best_params_SES.xlsx", type=["xlsx"], key="ses")
+    file_cro = st.file_uploader("Upload best_params_CROSTON.xlsx", type=["xlsx"], key="cro")
+    file_sba = st.file_uploader("Upload best_params_SBA.xlsx", type=["xlsx"], key="sba")
 
-    if file_articles and file_hanin:
-        best_per_code = select_best_method_from_articles(file_articles)
+    if file_data and file_ses and file_cro and file_sba:
+        best_per_code = select_best_method_from_files(file_ses, file_cro, file_sba, pick_metric="RMSE")
         _disp(best_per_code, title="✅ Meilleure méthode et meilleurs paramètres par article")
 
-        st.subheader("▶️ Recalcul final au niveau de service 95%")
-        final_95 = run_final_once(best_per_code, file_hanin, service_level=NIVEAU_SERVICE_DEF)
+        st.subheader("Recalcul final (95%)")
+        final_95 = run_final_once(best_per_code, file_data, service_level=NIVEAU_SERVICE_DEF)
 
         SERVICE_LEVELS = [0.90, 0.92, 0.95, 0.98]
-        sensi = run_sensitivity(best_per_code, file_hanin, service_levels=SERVICE_LEVELS)
+        sensi = run_sensitivity(best_per_code, file_data, service_levels=SERVICE_LEVELS)
 
         if not sensi.empty:
             st.subheader("📊 Résumé global – moyennes par code et niveau de service")
@@ -348,7 +397,7 @@ def main():
                 Qw_star=("Qw_etoile", "first"),
                 n_star=("n_etoile", "first"),
             ).reset_index()
-            _disp(summary, n=50)
+            st.dataframe(summary)
         else:
             st.warning("⚠️ Aucun résultat de sensibilité (vérifier les entrées).")
 
